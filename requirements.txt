@@ -1,0 +1,29 @@
+# ── UI Framework ─────────────────────────────────────────────────────────────
+streamlit>=1.41.0           # web app UI framework (Apache 2.0)
+
+# ── Data Processing ───────────────────────────────────────────────────────────
+pandas>=2.2.0               # dataframes and data wrangling (BSD)
+numpy>=2.0.0                # numerical operations (BSD)
+openpyxl>=3.1.0             # Excel read/write (MIT)
+xlrd>=2.0.1                 # legacy .xls read support (BSD)
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+plotly>=6.0.0               # interactive charts (MIT)
+
+# ── Statistics & ML ───────────────────────────────────────────────────────────
+scipy>=1.10.0               # statistical tests (BSD)
+scikit-learn>=1.5.0         # KMeans, LinearRegression, StandardScaler (BSD)
+statsmodels>=0.14.0         # ARIMA forecasting, seasonal decomposition (BSD)
+
+# ── AI / LLM ─────────────────────────────────────────────────────────────────
+google-generativeai>=0.8.0  # Gemini API client (Apache 2.0)
+python-dotenv>=1.0.0        # .env file loader (BSD)
+
+# ── Query Engine ─────────────────────────────────────────────────────────────
+duckdb>=1.0.0               # in-process SQL engine (MIT)
+
+# ── Reporting ────────────────────────────────────────────────────────────────
+fpdf2>=2.7.0                # pure-Python PDF generation (LGPL)
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+loguru>=0.7.0               # structured logging with rotation (MIT)
