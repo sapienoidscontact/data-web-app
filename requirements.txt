@@ -9,6 +9,7 @@ xlrd>=2.0.1                 # legacy .xls read support (BSD)
 
 # ── Visualisation ─────────────────────────────────────────────────────────────
 plotly>=6.0.0               # interactive charts (MIT)
+matplotlib>=3.8.0           # static chart exhibits for PDF reports (PSF)
 
 # ── Statistics & ML ───────────────────────────────────────────────────────────
 scipy>=1.10.0               # statistical tests (BSD)

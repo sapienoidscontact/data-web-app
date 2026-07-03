@@ -6,6 +6,16 @@ import sys
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+# Streamlit Community Cloud: keys live in st.secrets, not .env — bridge them
+# into the environment so the Gemini client finds them either way.
+try:
+    import streamlit as _st_early
+    for _k in ("GEMINI_KEY_PRIMARY", "GEMINI_KEY_BACKUP"):
+        if not os.getenv(_k) and _k in _st_early.secrets:
+            os.environ[_k] = str(_st_early.secrets[_k])
+except Exception:
+    pass
+
 # Make sure core/ is importable regardless of working directory
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -26,6 +36,9 @@ from core.visualization import recommend_charts, render_recommendation
 from core.templates import auto_detect_template, get_template
 from core.forecast import run_forecast
 from core.reports import generate_pdf_report, generate_excel_report
+from core.ingest import load_uploaded
+from core.presets import build_bundle
+from core.dashboard.page import render_dashboard
 
 # ── PAGE CONFIG ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -51,6 +64,8 @@ for key, val in [
     ('data', None), ('original_data', None), ('filename', None),
     ('schema', None), ('domain', None), ('kpis', None),
     ('template', None), ('ai_history', []),
+    ('bundle', None), ('ingest_receipt', []), ('currency_symbol', ''),
+    ('ingest_symbols', {}), ('qa_history', []), ('pinned', []),
 ]:
     if key not in st.session_state:
         st.session_state[key] = val
@@ -61,13 +76,24 @@ with st.sidebar:
     st.markdown('*Analytics Portal*')
     st.divider()
 
-    uploaded = st.file_uploader('Upload CSV or Excel', type=['csv', 'xlsx'])
-    if uploaded is not None:
+    uploaded = st.file_uploader('Upload CSV or Excel', type=['csv', 'xlsx', 'xls'])
+    if uploaded is not None and uploaded.name != st.session_state.filename:
         try:
-            if uploaded.name.endswith('csv'):
-                df_raw = pd.read_csv(uploaded)
-            else:
-                df_raw = pd.read_excel(uploaded, engine='openpyxl')
+            # Resilient ingest: messy headers, currency strings, total rows, dates
+            try:
+                ingest = load_uploaded(uploaded)
+                df_raw = ingest.df
+                st.session_state.ingest_receipt = ingest.receipt
+                st.session_state.currency_symbol = ingest.currency_symbol
+                st.session_state.ingest_symbols = ingest.symbols
+            except Exception:
+                uploaded.seek(0)
+                if uploaded.name.endswith('csv'):
+                    df_raw = pd.read_csv(uploaded)
+                else:
+                    df_raw = pd.read_excel(uploaded, engine='openpyxl')
+                st.session_state.ingest_receipt = []
+                st.session_state.currency_symbol = ''
             st.session_state.data = df_raw.copy()
             st.session_state.original_data = df_raw.copy()
             st.session_state.filename = uploaded.name
@@ -86,6 +112,14 @@ with st.sidebar:
             except Exception as schema_err:
                 st.session_state.schema = None
                 st.session_state.domain = "general"
+            # Preset pipeline: detection → field mapping → audit → KPIs → insights
+            try:
+                st.session_state.bundle = build_bundle(
+                    df_raw, schema=st.session_state.schema,
+                    currency_symbol=st.session_state.currency_symbol,
+                    column_symbols=st.session_state.get('ingest_symbols'))
+            except Exception as bundle_err:
+                st.session_state.bundle = None
         except Exception as e:
             st.error(f'Load error: {e}')
 
@@ -105,6 +139,7 @@ with st.sidebar:
 
         st.divider()
         page = st.radio('', [
+            '⚡  Dashboard',
             '🏠  Overview',
             '🔍  Explore',
             '🔧  Wrangle',
@@ -207,9 +242,18 @@ def download_buttons(df, prefix='data'):
                        use_container_width=True)
 
 # ════════════════════════════════════════════════════════════════════════════
+# PAGE: AUTO DASHBOARD (preset-driven, end-to-end)
+# ════════════════════════════════════════════════════════════════════════════
+if page == '⚡  Dashboard':
+    st.title('⚡ Auto Dashboard')
+    st.caption('Industry preset detected from your data — KPIs, charts and '
+               'insights configured automatically.')
+    render_dashboard()
+
+# ════════════════════════════════════════════════════════════════════════════
 # PAGE: OVERVIEW
 # ════════════════════════════════════════════════════════════════════════════
-if page == '🏠  Overview':
+elif page == '🏠  Overview':
     st.title(':rainbow[Sapienoids™ Analytics Portal]')
     st.caption('Upload your CSV or Excel file in the sidebar to begin.')
 

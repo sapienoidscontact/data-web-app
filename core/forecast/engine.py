@@ -183,6 +183,16 @@ def run_forecast(
             f"Not enough data points for forecasting ({n} rows). Need at least 10."
         )
 
+    # Seasonality-aware model when the series has enough full cycles (C1):
+    # daily data → weekly cycle (7); monthly data → annual cycle (12).
+    season = _infer_seasonal_period(dates)
+    if season and n >= 2 * season + 6:
+        hw = _holt_winters_forecast(ts, dates, horizon, season)
+        if hw is not None:
+            logger.info(f"Using Holt-Winters model (seasonal period={season})")
+            hw.figure = _build_figure(hw)
+            return hw
+
     if n < 30:
         logger.info("Using Linear Trend model (n < 30)")
         result = _linear_forecast(ts, dates, horizon)
@@ -192,6 +202,61 @@ def run_forecast(
 
     result.figure = _build_figure(result)
     return result
+
+
+def _infer_seasonal_period(dates: pd.Series) -> int:
+    """Seasonal cycle length from the series' spacing: 7 for daily, 12 for
+    monthly. Weekly/quarterly series get no seasonal model (cycles too long)."""
+    if len(dates) < 3:
+        return 0
+    step = dates.diff().dt.days.dropna().median()
+    if step <= 1.5:
+        return 7
+    if 26 <= step <= 32:
+        return 12
+    return 0
+
+
+def _holt_winters_forecast(ts: pd.Series, dates: pd.Series, horizon: int,
+                           season: int):
+    """Additive Holt-Winters with confidence band from in-sample residuals."""
+    try:
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        model = ExponentialSmoothing(
+            ts.values.astype(float), trend="add", seasonal="add",
+            seasonal_periods=season, initialization_method="estimated",
+        ).fit(optimized=True)
+        fitted = pd.Series(model.fittedvalues)
+        resid_sd = float((ts.values - fitted.values).std())
+        fc_vals = model.forecast(horizon)
+
+        step = dates.diff().median()
+        future_dates = pd.Series(
+            [dates.iloc[-1] + step * (i + 1) for i in range(horizon)])
+        band = 1.96 * resid_sd
+        forecast_df = pd.DataFrame({
+            "date": future_dates,
+            "forecast": fc_vals,
+            "lower": fc_vals - band,
+            "upper": fc_vals + band,
+        })
+        mask = fitted.notna() & pd.Series(ts.values).notna()
+        denom = pd.Series(ts.values)[mask].replace(0, pd.NA).dropna()
+        mape = None
+        if len(denom):
+            err = (pd.Series(ts.values)[mask] - fitted[mask]).abs()
+            mape = float((err[denom.index] / denom.abs()).mean() * 100)
+        return ForecastResult(
+            model_name=f"Holt-Winters (seasonal, period={season})",
+            horizon=horizon,
+            historical=pd.DataFrame({"date": dates, "value": ts.values}),
+            forecast=forecast_df,
+            metrics={"mape": round(mape, 2) if mape is not None else None,
+                     "resid_sd": round(resid_sd, 4)},
+        )
+    except Exception as exc:
+        logger.debug(f"Holt-Winters failed, falling back: {exc}")
+        return None
 
 
 def _build_figure(result: ForecastResult) -> go.Figure:
