@@ -76,7 +76,25 @@ with st.sidebar:
     st.markdown('*Analytics Portal*')
     st.divider()
 
-    uploaded = st.file_uploader('Upload CSV or Excel', type=['csv', 'xlsx', 'xls'])
+    # ── Terms & Privacy consent gate ─────────────────────────────────────────
+    with st.expander('📜 Terms & Privacy', expanded=not st.session_state.get('terms_accepted')):
+        st.caption(
+            'Your file is processed **in your session only** — never stored or '
+            'shared. Optional AI features send **aggregates only** (never raw '
+            'rows) to Google Gemini. Outputs are automated analysis, **not '
+            'financial/medical/legal advice**. '
+            '[Full terms & privacy policy](https://github.com/sapienoidscontact/'
+            'data-web-app/blob/main/docs/TERMS_AND_PRIVACY.md)'
+        )
+        st.checkbox('I agree to the Terms & Privacy Policy',
+                    key='terms_accepted')
+
+    if st.session_state.get('terms_accepted'):
+        uploaded = st.file_uploader('Upload CSV or Excel',
+                                    type=['csv', 'xlsx', 'xls'])
+    else:
+        uploaded = None
+        st.info('Accept the terms above to upload a file.')
     if uploaded is not None and uploaded.name != st.session_state.filename:
         try:
             # Resilient ingest: messy headers, currency strings, total rows, dates
