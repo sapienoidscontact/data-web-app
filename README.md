@@ -28,14 +28,20 @@ learning curve.
    ("which segment moved the number"), correlation-based driver scan, and
    seasonality-aware forecasting (Holt-Winters / ARIMA / linear,
    auto-selected).
-4. **One-click Analyst Report** — a 17-section illustrated PDF/Markdown
-   review: executive summary, scorecard, trend & momentum, period bridge,
-   year-over-year (calendar or Indian fiscal year), seasonality, segment
-   deep-dive, distribution & outliers, findings, forecast outlook,
-   recommended actions, session log and methodology appendix — with ~9
-   auto-numbered chart exhibits. Shape it in the **Report Studio** (branding,
-   your own notes, section/KPI selection) and even **edit the report text
-   in-app** before the PDF is rebuilt.
+4. **One-click Analyst Report** — a 20-section illustrated PDF/Markdown
+   review: executive summary, scorecard with KPI-movement tornado, trend &
+   momentum, period bridge, **volume-vs-rate decomposition with mix-shift
+   (Simpson's paradox) check**, current-period pace tracking, year-over-year
+   (calendar or Indian fiscal year), seasonality, segment deep-dive with
+   small-multiples and Pareto curve, **cohort retention & repeat behaviour**,
+   distribution & outliers, findings, driver associations with correlation
+   heatmap and lagged leading-indicator scan, forecast outlook **with holdout
+   backtest overlay**, recommended actions, session log and a methodology
+   appendix that **discloses every skipped analysis with its reason** — up to
+   ~13 auto-numbered chart exhibits (14 selectable kinds). Shape it in the
+   **Report Studio** (branding, your own notes, section/KPI/exhibit
+   selection) and even **edit the report text in-app** before the PDF is
+   rebuilt.
 5. **Ask your data** — natural-language questions become read-only SQL
    (DuckDB) with strict guardrails; pin any answer or insight into the report.
 6. **Optional AI commentary** — Google Gemini writes prose around *computed*

@@ -56,11 +56,17 @@ class Section:
     def table(self, headers, rows): self.blocks.append(("table", headers, rows))
     def quote(self, text):    self.blocks.append(("quote", text))
 
-    def img(self, png: Optional[bytes], caption: str):
-        """Attach a visual exhibit; skipped silently if rendering failed."""
-        if png and not (self._doc and self._doc.no_exhibits):
-            n = self._doc.next_exhibit() if self._doc else 0
-            self.blocks.append(("img", png, f"Exhibit {n} - {caption}"))
+    def img(self, png: Optional[bytes], caption: str,
+            kind: Optional[str] = None):
+        """Attach a visual exhibit; skipped silently if rendering failed or
+        the exhibit kind was deselected in the Report Studio."""
+        if not png or (self._doc and self._doc.no_exhibits):
+            return
+        if (self._doc and self._doc.allowed_charts is not None
+                and kind and kind not in self._doc.allowed_charts):
+            return
+        n = self._doc.next_exhibit() if self._doc else 0
+        self.blocks.append(("img", png, f"Exhibit {n} - {caption}"))
 
 
 @dataclass
@@ -69,7 +75,14 @@ class ReportDoc:
     subtitle: str
     sections: List[Section] = field(default_factory=list)
     no_exhibits: bool = False
+    allowed_charts: Optional[set] = None      # None = all exhibit kinds
+    skips: List[tuple] = field(default_factory=list)  # (analysis, reason)
     _exhibits: int = 0
+
+    def skip(self, analysis: str, reason: str):
+        """Record why an analysis was omitted — disclosed in the appendix so
+        the reader knows nothing was silently missed."""
+        self.skips.append((analysis, reason))
 
     def exhibit_bank(self) -> Dict[int, tuple]:
         """{exhibit number: (png, caption)} — used to re-attach charts after
@@ -115,9 +128,12 @@ SECTION_MENU = [
     ("scorecard", "Performance Scorecard"),
     ("trend", "Trend & Momentum"),
     ("bridge", "Period Bridge (what moved the number)"),
+    ("volume_rate", "Volume vs Rate decomposition"),
+    ("pace", "Current Period Pace"),
     ("yoy", "Year-over-Year"),
     ("seasonality", "Seasonality"),
     ("segments", "Segment Deep-Dive"),
+    ("cohorts", "Cohorts & Repeat Behaviour"),
     ("distribution", "Distribution & Outliers"),
     ("findings", "Findings & Risk Flags"),
     ("evidence", "Analyst's Selected Evidence (pinned items)"),
@@ -126,6 +142,24 @@ SECTION_MENU = [
     ("recommendations", "Recommended Actions"),
     ("session", "Analysis Session Log"),
     ("appendix", "Appendix"),
+]
+
+# Exhibit kinds selectable in the Report Studio ("graph options").
+CHART_MENU = [
+    ("trend", "Trend line with anomaly flags"),
+    ("kpi_movement", "KPI movement tornado"),
+    ("bridge", "Waterfall bridge"),
+    ("volume_rate", "Volume-vs-rate waterfall"),
+    ("pace", "Period-to-date pace curve"),
+    ("yoy", "Year-over-year lines"),
+    ("seasonality", "Weekday pattern bars"),
+    ("segment_bars", "Segment bars (move-colored)"),
+    ("small_multiples", "Segment small-multiples"),
+    ("pareto", "Concentration (Pareto) curve"),
+    ("cohort", "Cohort retention grid"),
+    ("distribution", "Distribution histogram"),
+    ("correlation", "Correlation heatmap"),
+    ("forecast", "Forecast with backtest overlay"),
 ]
 
 
@@ -144,6 +178,7 @@ class ReportOptions:
     forecast_horizon: Optional[int] = None # None = auto, 0 = skip forecast
     include_exhibits: bool = True
     fiscal_start_month: int = 1           # 4 = Indian FY (Apr-Mar)
+    chart_kinds: Optional[List[str]] = None  # CHART_MENU keys; None = all
 
     def want(self, key: str) -> bool:
         return self.sections is None or key in self.sections
@@ -246,6 +281,10 @@ def _scorecard(doc, kpis, symbol, grain_word):
     rows = [[k.label, _fmt(k.value, k.fmt, symbol),
              _direction(k) or "-", k.description] for k in kpis]
     s.table(["Indicator", "Value", "Movement", "Definition"], rows)
+    s.img(rc.kpi_delta_bar([(k.label, k.delta_pct, k.polarity)
+                            for k in kpis], symbol),
+          "KPI movement overview - green favourable, red adverse "
+          "(by business polarity)", kind="kpi_movement")
 
 
 def _trend(doc, df, preset, mapping, symbol, cards=None):
@@ -274,7 +313,8 @@ def _trend(doc, df, preset, mapping, symbol, cards=None):
     s.img(rc.trend_chart(series, f"{label} per {gw0.rstrip('ly')}", symbol,
                          anomalies=anomaly_periods),
           f"{label} trend with rolling average"
-          + (" and anomaly flags (red circles)" if anomaly_periods else ""))
+          + (" and anomaly flags (red circles)" if anomaly_periods else ""),
+          kind="trend")
     vals = series.astype(float)
     total, mean = vals.sum(), vals.mean()
     best, worst = vals.idxmax(), vals.idxmin()
@@ -349,9 +389,12 @@ def _seasonality(doc, df, preset, mapping, symbol):
     peak, trough = share.idxmax(), share.idxmin()
     spread = share.max() - share.min()
     if spread < 5:
+        doc.skip("Seasonality", "weekday spread under 5 percentage points - "
+                                "no actionable weekly pattern")
         return
     s = doc.add("Seasonality Pattern")
-    s.img(rc.seasonality_chart(share), "Share of value by weekday")
+    s.img(rc.seasonality_chart(share), "Share of value by weekday",
+          kind="seasonality")
     s.kv([
         ("Strongest day", f"{_DOW[peak]} ({share.max():.1f}% of value)"),
         ("Weakest day", f"{_DOW[trough]} ({share.min():.1f}%)"),
@@ -391,6 +434,22 @@ def _segments(doc, df, preset, mapping, symbol, segment_fields=None,
     s = doc.add("Segment Deep-Dive")
     s.p(f"Where the {mcol} actually comes from - and which segments moved "
         "it last period.")
+    # small multiples: trend per top segment of the leading dimension
+    if dcol and dims:
+        col0 = dims[0][1]
+        dts = pd.to_datetime(df[dcol], errors="coerce")
+        okd = dts.notna()
+        if okd.sum() >= 12:
+            g0 = auto_grain(dts[okd])
+            per = dts[okd].dt.to_period(g0)
+            top4 = metric[okd].groupby(df[col0][okd].astype(str)).sum()                 .sort_values(ascending=False).head(4).index
+            series_map = {}
+            for name in top4:
+                m = df[col0][okd].astype(str) == name
+                series_map[name] = metric[okd][m].groupby(per[m]).sum()                     .sort_index()
+            s.img(rc.small_multiples(series_map, symbol),
+                  f"Trend per top {col0} (shared scale) - divergence "
+                  "spotting", kind="small_multiples")
     for dim_i, (fname, col) in enumerate(dims):
         g = metric.groupby(df[col].astype(str)).sum().sort_values(ascending=False)
         total = g.sum()
@@ -410,7 +469,8 @@ def _segments(doc, df, preset, mapping, symbol, segment_fields=None,
                     cur = metric[seg & cur_mask].sum()
                     moves[str(name)] = (cur - prev) / abs(prev) * 100
         s.img(rc.segment_bar(g, symbol, moves),
-              f"{mcol} by {col} (green/red = moved >5% last period)")
+              f"{mcol} by {col} (green/red = moved >5% last period)",
+              kind="segment_bars")
         rows = []
         for name, v in g.head(top_n).items():
             move = f"{moves[str(name)]:+.0f}%" if str(name) in moves else "-"
@@ -422,7 +482,7 @@ def _segments(doc, df, preset, mapping, symbol, segment_fields=None,
         if dim_i == 0 and len(g) >= 6:
             s.img(rc.pareto_chart(g, symbol),
                   f"Concentration curve - cumulative share of {mcol} "
-                  f"across {col} (dotted line = 80%)")
+                  f"across {col} (dotted line = 80%)", kind="pareto")
         # movers
         if cur_mask is not None and cur_mask.sum() and prev_mask.sum():
             cur_g = metric[cur_mask].groupby(df[col][cur_mask].astype(str)).sum()
@@ -488,7 +548,7 @@ def _bridge(doc, df, preset, mapping, symbol):
         f"{cur_p}. The bridge shows which {col} segments drove it:")
     s.img(rc.waterfall_chart(prev_total, contribs, cur_total,
                              labels=(str(prev_p), str(cur_p)), symbol=symbol),
-          f"{mcol} bridge by {col}: {prev_p} to {cur_p}")
+          f"{mcol} bridge by {col}: {prev_p} to {cur_p}", kind="bridge")
     driver = ranked.index[0]
     share = abs(ranked.iloc[0]) / abs(total_delta) if total_delta else 0
     s.bullets([
@@ -497,6 +557,260 @@ def _bridge(doc, df, preset, mapping, symbol):
         f"Compare each {gw}'s bridge over time to separate structural shifts "
         "from one-off swings.",
     ])
+
+
+def _volume_rate(doc, df, preset, mapping, symbol):
+    """
+    B2 — was the move more activity or more value per activity?
+    metric = volume × rate; the change decomposes exactly into
+    (Δvolume × rate₀) + (volume₁ × Δrate). Includes a mix-shift
+    (Simpson's paradox) check across the leading dimension (B3).
+    """
+    mcol = mapping.get(preset.primary_metric)
+    if mcol is None or not pd.api.types.is_numeric_dtype(
+            df.get(mcol, pd.Series(dtype=float))):
+        doc.skip("Volume vs Rate", "no numeric primary metric mapped")
+        return
+    dcol = next((mapping[f.name] for f in preset.fields
+                 if f.role == "temporal" and f.name in mapping), None)
+    if dcol is None:
+        doc.skip("Volume vs Rate", "no date field mapped")
+        return
+    dates = pd.to_datetime(df[dcol], errors="coerce")
+    ok = dates.notna()
+    grain = auto_grain(dates[ok]) if ok.sum() else "M"
+    cur_p, prev_p = last_two_full_periods(dates[ok], grain) if ok.sum() >= 8 \
+        else (None, None)
+    if cur_p is None:
+        doc.skip("Volume vs Rate", "fewer than two complete periods")
+        return
+    periods = dates.dt.to_period(grain)
+    cur_mask, prev_mask = periods == cur_p, periods == prev_p
+
+    # volume = distinct activity units if an id field is mapped, else rows
+    id_field = next((f.name for f in preset.fields
+                     if f.role == "identifier" and f.name in mapping), None)
+    id_col = mapping.get(id_field) if id_field else None
+
+    def vol(mask):
+        return (df[id_col][mask].nunique() if id_col
+                else int(mask.sum())) or 0
+
+    metric = df[mcol]
+    m0, m1 = float(metric[prev_mask].sum()), float(metric[cur_mask].sum())
+    v0, v1 = vol(prev_mask), vol(cur_mask)
+    if not v0 or not v1 or m0 == 0:
+        doc.skip("Volume vs Rate", "a period has no activity to decompose")
+        return
+    r0, r1 = m0 / v0, m1 / v1
+    vol_eff = (v1 - v0) * r0
+    rate_eff = (r1 - r0) * v1
+    total = m1 - m0
+    if abs(total) < abs(m0) * 0.005:
+        doc.skip("Volume vs Rate", "the metric was essentially flat "
+                                   "between the last two periods")
+        return
+    vol_label = id_field or "records"
+    gw = _GRAIN_WORD.get(grain, "period").rstrip("ly")
+    s = doc.add("Volume vs Rate - The Anatomy of the Move")
+    s.p(f"{mcol} moved {_fmt(total, 'currency' if symbol else 'number', symbol)} "
+        f"({total / abs(m0) * 100:+.1f}%) {prev_p} → {cur_p}. Splitting it "
+        f"into activity (how many {vol_label}) versus value-per-activity:")
+    contribs = pd.Series({
+        f"volume ({vol_label})": vol_eff,
+        "rate (value each)": rate_eff,
+    })
+    s.img(rc.waterfall_chart(m0, contribs, m1,
+                             labels=(str(prev_p), str(cur_p)), symbol=symbol),
+          f"{mcol} = volume x rate decomposition, {prev_p} to {cur_p}",
+          kind="volume_rate")
+    s.kv([
+        (f"Volume ({vol_label})", f"{v0:,} → {v1:,} "
+         f"({(v1 - v0) / v0 * 100:+.1f}%) — contributed "
+         f"{_fmt(vol_eff, 'currency' if symbol else 'number', symbol)}"),
+        ("Rate (value per unit)",
+         f"{_fmt(r0, 'currency' if symbol else 'number', symbol)} → "
+         f"{_fmt(r1, 'currency' if symbol else 'number', symbol)} "
+         f"({(r1 - r0) / abs(r0) * 100:+.1f}%) — contributed "
+         f"{_fmt(rate_eff, 'currency' if symbol else 'number', symbol)}"),
+        ("Dominant driver", "volume" if abs(vol_eff) >= abs(rate_eff)
+         else "rate"),
+    ])
+    s.p("A volume problem needs demand/traffic fixes; a rate problem needs "
+        "pricing/mix fixes - they are different playbooks.")
+
+    # B3: mix-shift (Simpson's paradox) check on the leading dimension
+    dim = next(((f.name, mapping[f.name]) for f in preset.fields
+                if f.role == "categorical" and f.name in mapping), None)
+    if dim and id_col is None:
+        col = dim[1]
+        seg = df[col].astype(str)
+        v0_i = seg[prev_mask].value_counts()
+        m1_i = metric[cur_mask].groupby(seg[cur_mask]).sum()
+        v1_i = seg[cur_mask].value_counts()
+        common = v0_i.index.intersection(v1_i.index)
+        if len(common) >= 3 and v0_i[common].sum():
+            r1_i = (m1_i[common] / v1_i[common]).dropna()
+            shares0 = v0_i[common] / v0_i[common].sum()
+            r1_fixed = float((shares0.reindex(r1_i.index).fillna(0)
+                              * r1_i).sum())
+            blended_delta, fixed_delta = r1 - r0, r1_fixed - r0
+            if (abs(blended_delta) > abs(r0) * 0.02
+                    and blended_delta * fixed_delta < 0):
+                s.p(f"⚠ Mix-shift alert: at last period's {col} mix, the rate "
+                    f"would have moved the OTHER way "
+                    f"({fixed_delta / abs(r0) * 100:+.1f}% vs the blended "
+                    f"{blended_delta / abs(r0) * 100:+.1f}%). The blended "
+                    "figure reflects a composition change, not underlying "
+                    "performance - judge segments individually.")
+
+
+def _pace(doc, df, preset, mapping, symbol):
+    """
+    Current-period pace: the in-progress period is excluded from trends (to
+    avoid false declines) but tracked here, where partial data is the point.
+    """
+    mcol = mapping.get(preset.primary_metric)
+    dcol = next((mapping[f.name] for f in preset.fields
+                 if f.role == "temporal" and f.name in mapping), None)
+    if dcol is None:
+        doc.skip("Current Period Pace", "no date field mapped")
+        return
+    dates = pd.to_datetime(df[dcol], errors="coerce")
+    ok = dates.notna()
+    if ok.sum() < 20:
+        doc.skip("Current Period Pace", "too few dated records")
+        return
+    grain = auto_grain(dates[ok])
+    if grain not in ("W", "M"):
+        doc.skip("Current Period Pace",
+                 f"pace tracking applies to weekly/monthly views, not "
+                 f"{_GRAIN_WORD.get(grain, grain)}")
+        return
+    periods = dates[ok].dt.to_period(grain)
+    uniq = sorted(periods.unique())
+    if len(uniq) < 2:
+        doc.skip("Current Period Pace", "needs at least two periods")
+        return
+    cur_p, prev_p = uniq[-1], uniq[-2]
+    metric = (df[mcol][ok] if mcol and pd.api.types.is_numeric_dtype(
+        df.get(mcol, pd.Series(dtype=float))) else pd.Series(1.0, index=dates[ok].index))
+
+    def cum_by_day(period):
+        mask = periods == period
+        day = (dates[ok][mask] - period.to_timestamp()).dt.days + 1
+        return metric[mask].groupby(day).sum().sort_index().cumsum()
+
+    cur_cum, prev_cum = cum_by_day(cur_p), cum_by_day(prev_p)
+    if not len(cur_cum) or not len(prev_cum):
+        doc.skip("Current Period Pace", "no activity in the latest period")
+        return
+    day_now = int(cur_cum.index[-1])
+    period_len = 7 if grain == "W" else cur_p.days_in_month
+    prev_at_same = float(prev_cum[prev_cum.index <= day_now].iloc[-1]) \
+        if (prev_cum.index <= day_now).any() else None
+    cur_now = float(cur_cum.iloc[-1])
+    prev_total = float(prev_cum.iloc[-1])
+    run_rate = cur_now / day_now * period_len if day_now else None
+
+    gw = _GRAIN_WORD.get(grain, "period").rstrip("ly")
+    s = doc.add("Current Period Pace")
+    s.p(f"The {gw} in progress ({cur_p}, day {day_now} of {period_len}) is "
+        "excluded from all trend statistics above; here is how it is "
+        "tracking:")
+    s.img(rc.pace_chart(cur_cum, prev_cum, labels=(str(cur_p), str(prev_p)),
+                        symbol=symbol),
+          f"Cumulative {mcol or 'activity'}: {cur_p} so far vs {prev_p}",
+          kind="pace")
+    kv = [(f"So far this {gw}",
+           _fmt(cur_now, "currency" if symbol else "number", symbol))]
+    if prev_at_same:
+        kv.append((f"Previous {gw} at the same day",
+                   f"{_fmt(prev_at_same, 'currency' if symbol else 'number', symbol)} "
+                   f"({(cur_now - prev_at_same) / prev_at_same * 100:+.1f}% pace)"))
+    if run_rate and prev_total:
+        kv.append((f"Projected {gw} total (run-rate)",
+                   f"{_fmt(run_rate, 'currency' if symbol else 'number', symbol)} "
+                   f"({(run_rate - prev_total) / prev_total * 100:+.1f}% vs "
+                   f"previous {gw})"))
+    s.kv(kv)
+
+
+def _cohorts(doc, df, preset, mapping, symbol):
+    """
+    B5 — repeat behaviour: when an entity id (customer/donor/patient/student)
+    and dates exist, build first-seen cohorts and a retention grid.
+    """
+    entity_fields = [f.name for f in preset.fields
+                     if f.role == "identifier" and f.name in mapping
+                     and any(w in f.name for w in
+                             ("customer", "donor", "patient", "student",
+                              "member", "user"))]
+    if not entity_fields:
+        doc.skip("Cohorts & Repeat Behaviour",
+                 "no customer/donor/patient-style id field mapped")
+        return
+    ecol = mapping[entity_fields[0]]
+    dcol = next((mapping[f.name] for f in preset.fields
+                 if f.role == "temporal" and f.name in mapping), None)
+    if dcol is None:
+        doc.skip("Cohorts & Repeat Behaviour", "no date field mapped")
+        return
+    dates = pd.to_datetime(df[dcol], errors="coerce")
+    ok = dates.notna() & df[ecol].notna()
+    if ok.sum() < 60 or df[ecol][ok].nunique() < 30:
+        doc.skip("Cohorts & Repeat Behaviour",
+                 "needs at least ~30 distinct entities with dates")
+        return
+    span_days = (dates[ok].max() - dates[ok].min()).days
+    grain = "M" if span_days >= 85 else "W"
+    frame = pd.DataFrame({"e": df[ecol][ok].astype(str),
+                          "p": dates[ok].dt.to_period(grain)})
+    first = frame.groupby("e")["p"].min().rename("cohort")
+    frame = frame.merge(first, left_on="e", right_index=True)
+    frame["k"] = (frame["p"] - frame["cohort"]).apply(lambda d: d.n)
+    max_k = min(6, int(frame["k"].max()))
+    if max_k < 1:
+        doc.skip("Cohorts & Repeat Behaviour",
+                 "every entity appears in a single period only")
+        return
+    cohort_sizes = first.value_counts().sort_index()
+    recent = cohort_sizes.index[-8:]
+    matrix = {}
+    for c in recent:
+        base = cohort_sizes[c]
+        row = {}
+        for k in range(0, max_k + 1):
+            active = frame[(frame["cohort"] == c)
+                           & (frame["k"] == k)]["e"].nunique()
+            future = (c.to_timestamp() + pd.DateOffset(
+                months=k if grain == "M" else 0,
+                weeks=k if grain == "W" else 0))
+            row[k] = active / base * 100 if future <= dates[ok].max() \
+                else float("nan")
+        matrix[str(c)] = row
+    mat = pd.DataFrame(matrix).T
+    repeat_rate = (frame.groupby("e")["p"].nunique() >= 2).mean() * 100
+    # period ordinals avoid Period-arithmetic overflow on NaT shifts
+    frame["_ord"] = frame["p"].map(lambda p: p.ordinal)
+    dedup = frame.drop_duplicates(["e", "_ord"]).sort_values(["e", "_ord"])
+    gaps = dedup.groupby("e")["_ord"].diff().dropna()
+    med_gap = float(gaps.median()) if len(gaps) else None
+
+    gw = _GRAIN_WORD.get(grain, "period")
+    s = doc.add("Cohorts & Repeat Behaviour")
+    s.img(rc.cohort_heatmap(mat),
+          f"Retention by first-activity cohort ({gw} grain): % of each "
+          "cohort active N periods later", kind="cohort")
+    kv = [("Entities analysed", f"{df[ecol][ok].nunique():,}"),
+          ("Repeat rate", f"{repeat_rate:.1f}% appear in 2+ {gw} periods")]
+    if med_gap is not None:
+        kv.append((f"Median gap between active {gw} periods",
+                   f"{med_gap:.1f}"))
+    s.kv(kv)
+    s.p("Read down a column: falling retention in newer cohorts means "
+        "recently acquired entities are weaker - an early-warning signal "
+        "revenue totals hide.")
 
 
 def _yoy(doc, df, preset, mapping, symbol, fiscal_start: int = 1):
@@ -509,6 +823,7 @@ def _yoy(doc, df, preset, mapping, symbol, fiscal_start: int = 1):
     dates = pd.to_datetime(df[dcol], errors="coerce")
     ok = dates.notna()
     if ok.sum() < 30 or (dates[ok].max() - dates[ok].min()).days < 400:
+        doc.skip("Year-over-Year", "data spans less than ~13 months")
         return
     metric = df[mcol][ok] if mcol and pd.api.types.is_numeric_dtype(
         df.get(mcol, pd.Series(dtype=float))) else pd.Series(1.0,
@@ -538,7 +853,8 @@ def _yoy(doc, df, preset, mapping, symbol, fiscal_start: int = 1):
         s.p(f"Fiscal years starting {month_labels[0]} "
             f"(FY named by ending year).")
     s.img(rc.yoy_chart(pivot, symbol, month_labels=month_labels),
-          "Monthly value by year - seasonality-adjusted comparison")
+          "Monthly value by year - seasonality-adjusted comparison",
+          kind="yoy")
     yr_cols = list(pivot.columns)
     totals = pivot.sum()
     rows = []
@@ -563,7 +879,7 @@ def _distribution(doc, df, preset, mapping, symbol):
         return
     s = doc.add("Distribution & Outliers")
     s.img(rc.distribution_chart(v, symbol),
-          f"Distribution of {mcol} per record")
+          f"Distribution of {mcol} per record", kind="distribution")
     mean, med = v.mean(), v.median()
     skew = v.skew()
     z = np.abs((v - mean) / v.std()) if v.std() else pd.Series(0, index=v.index)
@@ -644,21 +960,97 @@ def _drivers(doc, df, preset, mapping):
         r, p = stats.pearsonr(pair.iloc[:, 0], pair.iloc[:, 1])
         if abs(r) >= 0.3 and p < 0.01:
             results.append((col, r, p))
-    if not results:
+    # B4: lagged relationships on period-aggregated series
+    lag_findings = []
+    dcol = next((mapping[f.name] for f in preset.fields
+                 if f.role == "temporal" and f.name in mapping), None)
+    if dcol is not None:
+        dates = pd.to_datetime(df[dcol], errors="coerce")
+        okd = dates.notna()
+        if okd.sum() >= 24:
+            grain = auto_grain(dates[okd])
+            per = dates[okd].dt.to_period(grain)
+            target = df[mcol][okd].groupby(per).sum().sort_index()
+            gw = _GRAIN_WORD.get(grain, "period").rstrip("ly")
+            for fname, col in mapping.items():
+                if col == mcol or col not in df.columns \
+                        or not pd.api.types.is_numeric_dtype(df[col]):
+                    continue
+                driver = df[col][okd].groupby(per).sum().sort_index()
+                best = None
+                for lag in range(1, 5):
+                    joined = pd.concat([driver.shift(lag), target], axis=1,
+                                       join="inner").dropna()
+                    if len(joined) < 8:
+                        continue
+                    r, p = stats.pearsonr(joined.iloc[:, 0],
+                                          joined.iloc[:, 1])
+                    if abs(r) >= 0.5 and p < 0.05 \
+                            and (best is None or abs(r) > abs(best[1])):
+                        best = (lag, r, p)
+                if best:
+                    lag_findings.append(
+                        f"{col} leads {mcol} by ~{best[0]} {gw}(s) "
+                        f"(r={best[1]:+.2f}, p={best[2]:.3f}) - watch it as "
+                        "an early indicator.")
+
+    num_cols = [c for c in dict.fromkeys(mapping.values())
+                if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+    if not results and not lag_findings and len(num_cols) < 3:
+        doc.skip("Driver Associations",
+                 "fewer than 3 numeric fields mapped and no significant "
+                 "association with the primary metric")
         return
     s = doc.add("Driver Associations")
     s.p(f"Numeric fields that co-move with {mcol}. Association is not "
         "causation - treat these as hypotheses to test with a holdout.")
-    s.table(["Field", "Correlation (r)", "p-value", "Read"],
-            [[c, f"{r:+.2f}", f"{p:.4f}",
-              ("strong" if abs(r) >= 0.6 else "moderate") +
-              (" positive" if r > 0 else " negative")]
-             for c, r, p in sorted(results, key=lambda t: -abs(t[1]))])
+    if not results and not lag_findings:
+        s.p("No numeric field showed a statistically significant "
+            f"association with {mcol} (thresholds: |r| >= 0.3, p < 0.01) - "
+            "a genuine finding in itself: the drivers of this metric are "
+            "not in this file's numeric columns.")
+    if results:
+        s.table(["Field", "Correlation (r)", "p-value", "Read"],
+                [[c, f"{r:+.2f}", f"{p:.4f}",
+                  ("strong" if abs(r) >= 0.6 else "moderate") +
+                  (" positive" if r > 0 else " negative")]
+                 for c, r, p in sorted(results, key=lambda t: -abs(t[1]))])
+    if lag_findings:
+        s.p("Leading indicators (lagged co-movement):")
+        s.bullets(lag_findings)
+    if len(num_cols) >= 3:
+        corr = df[num_cols].corr(numeric_only=True)
+        s.img(rc.corr_heatmap(corr),
+              "Correlation matrix of mapped numeric fields "
+              "(+1 move together, -1 move opposite)", kind="correlation")
 
 
 def _outlook(doc, df, preset, mapping, symbol, horizon_override=None):
     series, grain, label, _ = _period_series(df, preset, mapping)
+    if series is not None and len(series) < 10 and grain in ("M", "Q"):
+        # too few monthly points to model - refit at weekly grain, which a
+        # real analyst would do rather than refusing to forecast
+        dcol = next((mapping[f.name] for f in preset.fields
+                     if f.role == "temporal" and f.name in mapping), None)
+        mcol = mapping.get(preset.primary_metric)
+        if dcol is not None:
+            dts = pd.to_datetime(df[dcol], errors="coerce")
+            okw = dts.notna()
+            if okw.sum() >= 20:
+                per = dts[okw].dt.to_period("W")
+                metric = (df[mcol][okw] if mcol and
+                          pd.api.types.is_numeric_dtype(
+                              df.get(mcol, pd.Series(dtype=float)))
+                          else pd.Series(1.0, index=dts[okw].index))
+                weekly = metric.groupby(per).sum().sort_index()
+                if len(weekly) >= 3 and is_partial_period(
+                        weekly.index[-1], dts[okw].max(), "W"):
+                    weekly = weekly.iloc[:-1]
+                if len(weekly) >= 10:
+                    series, grain = weekly, "W"
     if series is None or len(series) < 8:
+        doc.skip("Outlook (Forecast)",
+                 "needs at least 8 complete periods of history")
         return
     try:
         from ..forecast import run_forecast
@@ -670,14 +1062,38 @@ def _outlook(doc, df, preset, mapping, symbol, horizon_override=None):
                    else int(min(8, max(3, len(ts) // 3))))
         res = run_forecast(ts, "ds", "y", horizon=horizon)
         fc = res.forecast
+
+        # C2: honest holdout backtest — refit on truncated history, compare
+        # the model's predictions against the periods we already know.
+        backtest_df, holdout_mape = None, None
+        h_bt = int(min(4, len(ts) // 4))
+        if h_bt >= 2:
+            try:
+                res_bt = run_forecast(ts.iloc[:-h_bt], "ds", "y",
+                                      horizon=h_bt)
+                pred = res_bt.forecast["forecast"].values[:h_bt]
+                actual = ts["y"].values[-h_bt:]
+                backtest_df = pd.DataFrame({
+                    "date": ts["ds"].values[-h_bt:], "pred": pred})
+                nz = actual != 0
+                if nz.any():
+                    holdout_mape = float(
+                        (abs(actual[nz] - pred[nz]) / abs(actual[nz])).mean()
+                        * 100)
+            except Exception as bt_exc:
+                logger.debug(f"Backtest skipped: {bt_exc}")
+
         gw = _GRAIN_WORD.get(grain, "period")
         s = doc.add("Outlook (Forecast)")
         try:
             hist_df = res.historical.rename(columns=dict(zip(
                 res.historical.columns[:2], ["date", "value"])))
-            s.img(rc.forecast_chart(hist_df, fc, symbol),
-                  f"{label} - history and {horizon}-period forecast "
-                  "with confidence range")
+            s.img(rc.forecast_chart(hist_df, fc, symbol,
+                                    backtest=backtest_df),
+                  f"{label} - history, {horizon}-period forecast with "
+                  "confidence range"
+                  + (" and holdout backtest (orange squares)"
+                     if backtest_df is not None else ""), kind="forecast")
         except Exception:
             pass
         nxt = fc.iloc[0]
@@ -689,7 +1105,10 @@ def _outlook(doc, df, preset, mapping, symbol, horizon_override=None):
              f" - {_fmt(nxt.get('upper'), 'currency' if symbol else 'number', symbol)})"),
             (f"Projected total, next {horizon} {gw} periods",
              _fmt(fc['forecast'].sum(), 'currency' if symbol else 'number', symbol)),
-        ] + ([("Backtest error (MAPE)", f"{res.metrics['mape']:.1f}%")]
+        ] + ([("Holdout backtest error",
+               f"{holdout_mape:.1f}% average miss over the last {h_bt} "
+               f"known {gw} periods")] if holdout_mape is not None else [])
+          + ([("In-sample MAPE", f"{res.metrics['mape']:.1f}%")]
              if res.metrics.get("mape") is not None else []))
         s.p("Forecasts assume history repeats. If sections 4 or 7 flag a "
             "trend break or unresolved anomaly, widen your planning range "
@@ -748,6 +1167,11 @@ def _session_log(doc, ctx):
 
 def _appendix(doc, bundle, kpis, df=None):
     s = doc.add("Appendix - Definitions & Method")
+    # "misses nothing" disclosure: analyses attempted but not applicable
+    if doc.skips:
+        s.p("Analyses attempted but not applicable to this dataset "
+            "(nothing was silently skipped):")
+        s.bullets([f"{name}: {reason}" for name, reason in doc.skips])
     s.p("Field mapping used (canonical field -> source column):")
     s.table(["Canonical field", "Source column"],
             [[k, v] for k, v in bundle.mapping.items()])
@@ -802,6 +1226,8 @@ def build_analyst_report(df: pd.DataFrame, bundle, kpis: List[KPIValue],
         title=opts.title or f"{preset.icon} {preset.label} - Analyst Report",
         subtitle=subtitle,
         no_exhibits=not opts.include_exhibits,
+        allowed_charts=set(opts.chart_kinds)
+        if opts.chart_kinds is not None else None,
     )
     if opts.want("exec"):
         _exec_summary(doc, kpis, cards, preset, symbol, grain_word,
@@ -819,6 +1245,10 @@ def build_analyst_report(df: pd.DataFrame, bundle, kpis: List[KPIValue],
         _trend(doc, df, preset, bundle.mapping, symbol, cards)
     if opts.want("bridge"):
         _bridge(doc, df, preset, bundle.mapping, symbol)
+    if opts.want("volume_rate"):
+        _volume_rate(doc, df, preset, bundle.mapping, symbol)
+    if opts.want("pace"):
+        _pace(doc, df, preset, bundle.mapping, symbol)
     if opts.want("yoy"):
         _yoy(doc, df, preset, bundle.mapping, symbol,
              fiscal_start=opts.fiscal_start_month)
@@ -827,6 +1257,8 @@ def build_analyst_report(df: pd.DataFrame, bundle, kpis: List[KPIValue],
     if opts.want("segments"):
         _segments(doc, df, preset, bundle.mapping, symbol,
                   segment_fields=opts.segment_fields, top_n=opts.top_n)
+    if opts.want("cohorts"):
+        _cohorts(doc, df, preset, bundle.mapping, symbol)
     if opts.want("distribution"):
         _distribution(doc, df, preset, bundle.mapping, symbol)
     if opts.want("findings"):

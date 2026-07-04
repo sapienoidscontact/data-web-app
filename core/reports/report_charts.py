@@ -219,8 +219,10 @@ def distribution_chart(values: pd.Series, symbol: str = "") -> Optional[bytes]:
 
 
 def forecast_chart(hist: pd.DataFrame, fc: pd.DataFrame,
-                   symbol: str = "") -> Optional[bytes]:
-    """History + forecast line with shaded confidence band."""
+                   symbol: str = "",
+                   backtest: Optional[pd.DataFrame] = None) -> Optional[bytes]:
+    """History + forecast with confidence band; optional backtest overlay
+    (what the model would have predicted for recent known periods — C2)."""
     try:
         fig, ax = _new_fig()
         ax.plot(hist["date"], hist["value"], color=ACCENT, linewidth=2,
@@ -230,12 +232,163 @@ def forecast_chart(hist: pd.DataFrame, fc: pd.DataFrame,
         if {"lower", "upper"} <= set(fc.columns):
             ax.fill_between(fc["date"], fc["lower"], fc["upper"],
                             color=BAD, alpha=0.12, label="confidence range")
+        if backtest is not None and len(backtest):
+            ax.plot(backtest["date"], backtest["pred"], color="#F59E0B",
+                    linewidth=1.6, marker="s", markersize=4, linestyle=":",
+                    label="backtest (model vs recent actuals)")
         ax.yaxis.set_major_formatter(_axis_fmt(symbol))
         ax.legend(fontsize=7.5, frameon=False, loc="upper left")
         fig.autofmt_xdate(rotation=0, ha="center")
         return _png(fig)
     except Exception as exc:
         logger.debug(f"forecast_chart failed: {exc}")
+        return None
+
+
+def kpi_delta_bar(items, symbol: str = "") -> Optional[bytes]:
+    """
+    KPI movement tornado: one horizontal bar per KPI's period-over-period
+    move, green when favourable / red when adverse by declared polarity.
+    `items` = list of (label, delta_pct, polarity).
+    """
+    try:
+        items = [(l, d, p) for l, d, p in items if d is not None][:12]
+        if len(items) < 2:
+            return None
+        items.sort(key=lambda t: t[1])
+        fig, ax = _new_fig(7.4, 0.4 * len(items) + 0.9)
+        labels = [i[0][:24] for i in items]
+        vals = [i[1] for i in items]
+        colors = []
+        for _, d, pol in items:
+            if pol == "neutral":
+                colors.append(MUTED)
+            else:
+                colors.append(GOOD if (d > 0) == (pol == "up_good") else BAD)
+        ax.barh(labels, vals, color=colors)
+        for i, v in enumerate(vals):
+            ax.text(v, i, f" {v:+.1f}%", va="center", fontsize=7.5,
+                    color="#334155")
+        ax.axvline(0, color="#94A3B8", linewidth=1)
+        ax.set_xlabel("% change vs previous period", fontsize=8,
+                      color="#475569")
+        ax.grid(axis="y", linewidth=0)
+        ax.margins(x=0.15)
+        return _png(fig)
+    except Exception as exc:
+        logger.debug(f"kpi_delta_bar failed: {exc}")
+        return None
+
+
+def small_multiples(series_map: Dict[str, pd.Series],
+                    symbol: str = "") -> Optional[bytes]:
+    """Mini trend per top segment on a shared y-scale — spot diverging
+    segments at a glance."""
+    try:
+        series_map = {k: v for k, v in series_map.items() if len(v) >= 3}
+        if len(series_map) < 2:
+            return None
+        names = list(series_map)[:4]
+        ymax = max(float(s.max()) for s in series_map.values()) * 1.08
+        fig, axes = plt.subplots(1, len(names), figsize=(7.4, 2.2), dpi=150,
+                                 sharey=True)
+        for ax, name in zip(np.atleast_1d(axes), names):
+            s = series_map[name]
+            x = _period_x(s)
+            ax.plot(x, s.values, color=ACCENT, linewidth=1.8)
+            ax.fill_between(x, s.values, color=FILL, alpha=0.5)
+            ax.set_title(str(name)[:16], fontsize=8, color="#334155")
+            ax.set_ylim(0, ymax)
+            ax.tick_params(labelsize=6, colors="#64748B")
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.grid(axis="y", color="#E2E8F0", linewidth=0.5)
+            for lbl in ax.get_xticklabels():
+                lbl.set_rotation(30)
+        np.atleast_1d(axes)[0].yaxis.set_major_formatter(_axis_fmt(symbol))
+        return _png(fig)
+    except Exception as exc:
+        logger.debug(f"small_multiples failed: {exc}")
+        return None
+
+
+def corr_heatmap(corr: pd.DataFrame) -> Optional[bytes]:
+    """Correlation matrix of mapped numeric fields, diverging palette."""
+    try:
+        if corr.shape[0] < 3:
+            return None
+        fig, ax = plt.subplots(figsize=(6.4, 4.6), dpi=150)
+        im = ax.imshow(corr.values, cmap="RdBu_r", vmin=-1, vmax=1)
+        labels = [str(c)[:14] for c in corr.columns]
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=7.5)
+        ax.set_yticks(range(len(labels)))
+        ax.set_yticklabels(labels, fontsize=7.5)
+        for i in range(corr.shape[0]):
+            for j in range(corr.shape[1]):
+                v = corr.values[i, j]
+                ax.text(j, i, f"{v:+.2f}", ha="center", va="center",
+                        fontsize=6.5,
+                        color="white" if abs(v) > 0.55 else "#334155")
+        fig.colorbar(im, ax=ax, shrink=0.8).ax.tick_params(labelsize=7)
+        return _png(fig)
+    except Exception as exc:
+        logger.debug(f"corr_heatmap failed: {exc}")
+        return None
+
+
+def pace_chart(cur_cum: pd.Series, prev_cum: pd.Series,
+               labels: tuple = ("current period", "previous period"),
+               symbol: str = "") -> Optional[bytes]:
+    """Cumulative day-of-period pace: is the in-progress period ahead of or
+    behind the last one at the same point?"""
+    try:
+        fig, ax = _new_fig(7.4, 2.9)
+        ax.plot(prev_cum.index, prev_cum.values, color=MUTED, linewidth=1.8,
+                label=labels[1])
+        ax.plot(cur_cum.index, cur_cum.values, color=ACCENT, linewidth=2.4,
+                label=f"{labels[0]} (so far)")
+        # mark the same-point comparison
+        if len(cur_cum):
+            day = cur_cum.index[-1]
+            ax.scatter([day], [cur_cum.iloc[-1]], color=ACCENT, s=45, zorder=5)
+            if day in prev_cum.index:
+                ax.scatter([day], [prev_cum.loc[day]], color=MUTED, s=45,
+                           zorder=5)
+        ax.set_xlabel("day of period", fontsize=8, color="#475569")
+        ax.yaxis.set_major_formatter(_axis_fmt(symbol))
+        ax.legend(fontsize=7.5, frameon=False, loc="upper left")
+        return _png(fig)
+    except Exception as exc:
+        logger.debug(f"pace_chart failed: {exc}")
+        return None
+
+
+def cohort_heatmap(matrix: pd.DataFrame) -> Optional[bytes]:
+    """Retention grid: rows = first-seen cohort, cols = periods since first,
+    cell = % of cohort active."""
+    try:
+        if matrix.shape[0] < 2 or matrix.shape[1] < 2:
+            return None
+        fig, ax = plt.subplots(
+            figsize=(7.4, 0.42 * matrix.shape[0] + 1.1), dpi=150)
+        im = ax.imshow(matrix.values, cmap="Purples", vmin=0, vmax=100,
+                       aspect="auto")
+        ax.set_xticks(range(matrix.shape[1]))
+        ax.set_xticklabels([f"+{c}" for c in matrix.columns], fontsize=7.5)
+        ax.set_yticks(range(matrix.shape[0]))
+        ax.set_yticklabels([str(i) for i in matrix.index], fontsize=7.5)
+        ax.set_xlabel("periods after first activity", fontsize=8,
+                      color="#475569")
+        for i in range(matrix.shape[0]):
+            for j in range(matrix.shape[1]):
+                v = matrix.values[i, j]
+                if not np.isnan(v):
+                    ax.text(j, i, f"{v:.0f}", ha="center", va="center",
+                            fontsize=6.5,
+                            color="white" if v > 55 else "#334155")
+        return _png(fig)
+    except Exception as exc:
+        logger.debug(f"cohort_heatmap failed: {exc}")
         return None
 
 
@@ -248,7 +401,7 @@ def waterfall_chart(prev_total: float, contribs: pd.Series, cur_total: float,
     """
     try:
         items = [(labels[0], prev_total, "base")]
-        items += [(str(k)[:14], float(v), "delta") for k, v in contribs.items()]
+        items += [(str(k)[:24], float(v), "delta") for k, v in contribs.items()]
         items += [(labels[1], cur_total, "base")]
         fig, ax = _new_fig(7.4, 3.0)
         running = 0.0

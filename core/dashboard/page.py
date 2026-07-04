@@ -24,7 +24,7 @@ import re
 from ..presets import (AnalysisBundle, ALL_PRESETS, PRESET_BY_NAME, build_bundle,
                        cards_to_context, compute_pack, forget, generate_cards,
                        pack_to_context, remember)
-from ..reports.analyst_report import (SECTION_MENU, ReportOptions,
+from ..reports.analyst_report import (CHART_MENU, SECTION_MENU, ReportOptions,
                                       SessionContext, build_analyst_report,
                                       markdown_to_doc, render_markdown,
                                       render_pdf)
@@ -355,6 +355,12 @@ def _report_studio(bundle: AnalysisBundle, kpis) -> ReportOptions:
             "Sections to include", options=default_secs,
             default=default_secs, key="rs_sections",
             format_func=lambda k: section_labels[k])
+        chart_labels = {k: lbl for k, lbl in CHART_MENU}
+        default_charts = [k for k, _ in CHART_MENU]
+        charts_sel = st.multiselect(
+            "Chart exhibits to include", options=default_charts,
+            default=default_charts, key="rs_charts",
+            format_func=lambda k: chart_labels[k])
         kc1, kc2 = st.columns(2)
         kpi_opts = [k.key for k in kpis]
         kpi_sel = kc1.multiselect(
@@ -394,6 +400,8 @@ def _report_studio(bundle: AnalysisBundle, kpis) -> ReportOptions:
         forecast_horizon=None if horizon == 8 else horizon,
         include_exhibits=exhibits,
         fiscal_start_month=4 if fiscal == "April" else 1,
+        chart_kinds=charts_sel
+        if charts_sel and set(charts_sel) != set(default_charts) else None,
     )
 
 
