@@ -1,5 +1,5 @@
 from .model import ChartSpec, FieldSpec, KPISpec, PresetSpec, DetectionResult
-from .specs import ALL_PRESETS, PRESET_BY_NAME
+from .specs import ALL_PRESETS, PRESET_BY_NAME, INDUSTRY_LENS
 from .field_mapper import map_fields
 from .detect import detect_preset, rank_presets
 from .kpis import KPIValue, compute_pack, pack_to_context, auto_grain

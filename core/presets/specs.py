@@ -890,3 +890,84 @@ ALL_PRESETS: List[PresetSpec] = [
 ]
 
 PRESET_BY_NAME = {p.name: p for p in ALL_PRESETS}
+
+
+# What a domain expert checks FIRST in each industry — surfaced as the report's
+# "Industry Lens" so the analysis reads as tailored, not generic.
+INDUSTRY_LENS: dict = {
+    "retail": [
+        "Same-store vs new-store growth, and weekday/weekend split",
+        "Dependence on top SKUs and the effect of discounting on volume",
+        "Repeat-customer rate as the leading signal beneath revenue",
+    ],
+    "sales_crm": [
+        "Pipeline coverage vs target and conversion between stages",
+        "Deal velocity and slipping/aged opportunities",
+        "Revenue concentration in a few reps or accounts (bus-factor risk)",
+    ],
+    "finance": [
+        "Cash burn vs runway and month-on-month expense creep",
+        "Budget variance drivers and recurring vs one-off spend",
+        "Unusual or largest transactions that distort the totals",
+    ],
+    "hr": [
+        "Attrition hot-spots by department and tenure band",
+        "Pay equity and compa-ratio outliers",
+        "Hiring-vs-exit balance and its effect on headcount trajectory",
+    ],
+    "marketing": [
+        "CPA/ROAS efficiency by campaign and channel, with spend context",
+        "Creative fatigue (CTR decay) and frequency saturation",
+        "Blended-metric mix shifts that hide true channel performance",
+    ],
+    "logistics": [
+        "On-time / SLA breach rate and first-attempt success",
+        "Carrier cost-vs-speed trade-off and lane-level performance",
+        "RTO/return concentration by destination",
+    ],
+    "manufacturing": [
+        "Plan attainment and the OEE loss tree (availability/quality/output)",
+        "Defect Pareto by product and line, with SPC-style control",
+        "Downtime cause concentration by machine and shift",
+    ],
+    "healthcare": [
+        "Capacity vs demand by day/hour and no-show clustering",
+        "Revenue mix by department and doctor productivity",
+        "New-vs-follow-up balance and payer/service mix drift",
+    ],
+    "education": [
+        "Attendance-to-performance link and at-risk cohort size",
+        "Batch/teacher variance in outcomes",
+        "Fee-collection rate and outstanding-dues aging",
+    ],
+    "real_estate": [
+        "Absorption/occupancy pace vs launch or plan",
+        "Price realization per sqft by configuration",
+        "Aging unsold inventory and collection/arrears risk",
+    ],
+    "hospitality": [
+        "Menu engineering: item volume vs margin quadrants",
+        "Channel profitability and aggregator commission drag",
+        "Peak-hour demand for staffing and covers/table efficiency",
+    ],
+    "saas": [
+        "MRR movement (new/expansion/contraction/churn) and NRR",
+        "Churn by plan and tenure band; cohort retention decay",
+        "Revenue concentration and expansion opportunity",
+    ],
+    "lending": [
+        "PAR buckets and roll/migration rates (early-warning delinquency)",
+        "Collection efficiency vs disbursal growth tension",
+        "Branch/officer outliers in portfolio quality",
+    ],
+    "energy": [
+        "Performance ratio vs expected and underperformance detection",
+        "Load/generation profile by hour and peak-demand charges",
+        "Site-level league table and downtime-loss quantification",
+    ],
+    "nonprofit": [
+        "Donor retention by acquisition channel and cohort",
+        "Donation concentration risk in a few large donors",
+        "Program cost-efficiency and grant burn vs timeline",
+    ],
+}

@@ -212,7 +212,15 @@ def _direction(k: KPIValue) -> str:
 
 def _exec_summary(doc, kpis, cards, preset, symbol, grain_word,
                   headline_override: str = ""):
+    from ..presets.specs import INDUSTRY_LENS
     s = doc.add("Executive Summary")
+    s.p(f"This is a {preset.label} analysis. It applies the metrics, charts "
+        f"and checks a {preset.report_tone.rstrip('s')} specialist would run "
+        "for this kind of data.")
+    lens = INDUSTRY_LENS.get(preset.name)
+    if lens:
+        s.p(f"Industry lens - what matters most in {preset.label}:")
+        s.bullets(lens)
     if headline_override:
         s.quote(f"HEADLINE: {headline_override}")
     elif cards:

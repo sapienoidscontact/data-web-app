@@ -425,16 +425,21 @@ def _render_report(bundle: AnalysisBundle, fdf: pd.DataFrame, kpis, cards,
             )
             doc = build_analyst_report(fdf, bundle, kpis, cards, ctx, opts)
             st.session_state["report_bank"] = doc.exhibit_bank()
+            st.session_state["report_doc"] = doc          # for inline preview
             st.session_state["report_md"] = render_markdown(doc,
                                                             embed_images=True)
             st.session_state["report_preview"] = render_markdown(
                 doc, embed_images=False)
+            n_ex = doc._exhibits
+            st.session_state["report_exhibit_count"] = n_ex
             st.session_state.pop("rs_edit_text", None)  # reset editor
             try:
                 st.session_state["report_pdf"] = render_pdf(doc)
             except Exception as e:
                 st.session_state["report_pdf"] = None
-                st.warning(f"PDF render issue ({e}) — markdown preview below.")
+                st.warning(f"PDF render issue ({e}) — preview below.")
+            st.success(f"Report ready: {len(doc.sections)} sections, "
+                       f"{n_ex} chart exhibit(s). Scroll down to view.")
     if not st.session_state.get("report_md"):
         return
 
@@ -451,6 +456,7 @@ def _render_report(bundle: AnalysisBundle, fdf: pd.DataFrame, kpis, cards,
             try:
                 doc2 = markdown_to_doc(edited,
                                        st.session_state.get("report_bank"))
+                st.session_state["report_doc"] = doc2
                 st.session_state["report_preview"] = edited
                 st.session_state["report_md"] = render_markdown(
                     doc2, embed_images=True)
@@ -466,12 +472,46 @@ def _render_report(bundle: AnalysisBundle, fdf: pd.DataFrame, kpis, cards,
             file_name=f"analyst_report_{pd.Timestamp.now():%Y%m%d_%H%M}.pdf",
             mime="application/pdf", use_container_width=True)
     c2.download_button(
-        "⬇ Download Markdown", st.session_state["report_md"],
+        "⬇ Download Markdown (charts embedded)", st.session_state["report_md"],
         file_name="analyst_report.md", mime="text/markdown",
         use_container_width=True)
-    with st.expander("👀 Preview report", expanded=True):
-        st.markdown(st.session_state.get("report_preview")
-                    or st.session_state["report_md"])
+    n_ex = st.session_state.get("report_exhibit_count", 0)
+    with st.expander(f"👀 Preview report — with all {n_ex} charts inline",
+                     expanded=True):
+        doc = st.session_state.get("report_doc")
+        if doc is not None:
+            _render_doc_inline(doc)
+        else:  # fallback to text preview
+            st.markdown(st.session_state.get("report_preview") or "")
+
+
+def _render_doc_inline(doc):
+    """Render a ReportDoc natively in Streamlit — charts shown as real images,
+    tables as dataframes. This is the on-screen analyst report."""
+    st.markdown(f"## {doc.title}")
+    st.caption(doc.subtitle)
+    for sec in doc.sections:
+        st.markdown(f"### {sec.title}")
+        for b in sec.blocks:
+            kind = b[0]
+            if kind == "p":
+                st.write(b[1])
+            elif kind == "quote":
+                st.info(b[1])
+            elif kind == "bullets":
+                st.markdown("\n".join(f"- {i}" for i in b[1]))
+            elif kind == "kv":
+                st.markdown("\n".join(f"- **{k}:** {v}" for k, v in b[1]))
+            elif kind == "table":
+                _, headers, rows = b
+                try:
+                    st.dataframe(pd.DataFrame(rows, columns=headers),
+                                 use_container_width=True, hide_index=True)
+                except Exception:
+                    st.table(rows)
+            elif kind == "img":
+                _, png, caption = b
+                st.image(png, caption=caption, use_container_width=True)
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

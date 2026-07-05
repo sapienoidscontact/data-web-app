@@ -139,6 +139,37 @@ def main():
     check("PDF renders", bytes(pdf[:4]) == b"%PDF" and len(pdf) > 100_000,
           f"{len(pdf)} bytes")
 
+    print("\n[10] Industry lens (report tailored per use case)")
+    check("industry lens present", "Industry lens" in md)
+    check("retail-specific watch-point", "Repeat-customer" in md
+          or "top SKUs" in md)
+    # a lending dataset must produce a DIFFERENT lens
+    rng = np.random.default_rng(7)
+    m = 1500
+    dl = pd.DataFrame({
+        "Loan ID": [f"LN{i}" for i in range(m)],
+        "Disbursal Date": pd.Timestamp("2024-01-01") + pd.to_timedelta(
+            rng.integers(0, 200, m), unit="D"),
+        "Principal": rng.uniform(1e4, 5e5, m).round(0),
+        "Outstanding": rng.uniform(0, 4e5, m).round(0),
+        "DPD": rng.integers(0, 120, m),
+        "Branch": rng.choice(["B1", "B2", "B3"], m),
+        "EMI Due": rng.uniform(1e3, 2e4, m),
+        "EMI Paid": rng.uniform(0, 2e4, m),
+    })
+    bl = build_bundle(dl, currency_symbol="₹")
+    mdl = render_markdown(build_analyst_report(dl, bl, bl.kpis, bl.cards),
+                          embed_images=False)
+    check("lending preset detected", bl.preset and bl.preset.name == "lending",
+          bl.preset.name if bl.preset else "none")
+    check("lending lens differs from retail",
+          "PAR" in mdl and "Repeat-customer" not in mdl)
+
+    print("\n[11] Inline preview renderer (charts as image blocks)")
+    n_img = sum(1 for s in doc.sections for b in s.blocks if b[0] == "img")
+    check("doc carries image blocks for inline display", n_img >= 8,
+          f"{n_img} image blocks")
+
     print("\n" + "=" * 60)
     print(f"  RESULT: {PASS} passed, {FAIL} failed")
     print("=" * 60)
